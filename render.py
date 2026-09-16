@@ -9,7 +9,7 @@ import pygame
 from PySide6.QtGui import QImage
 from pathlib import Path
 
-logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 def init_pygame_offscreen() -> None:

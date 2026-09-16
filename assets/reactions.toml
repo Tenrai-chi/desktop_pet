@@ -1,0 +1,11 @@
+[apps.chrome]
+process_names = ["chrome.exe"]
+texts = ["О, браузер!", "Пойдём гуглить?", "Что ищем?"]
+sounds = ["mur"]
+cooldown = 60.0
+
+[apps.steam]
+process_names = ["steam.exe", "steamwebhelper.exe", "pycharm64.exe"]
+texts = ["О, игры!", "Готов играть?", "Запускаем?"]
+sounds = ["mew"]
+cooldown = 60.0
