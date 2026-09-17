@@ -35,6 +35,8 @@ from loads_media import (
     load_walk_animation,
     load_music_animation,
     load_video_animation,
+    load_drag_still_frame,
+    load_kiss_animation
 )
 
 log = logging.getLogger(__name__)
@@ -51,16 +53,19 @@ def main() -> int | None:
         app.aboutToQuit.connect(shutdown_pygame)
 
         init_pygame_offscreen()
+
         idle_animation = load_idle_animation()
-        drag_right_animation = load_drag_animation('right')
-        drag_left_animation = load_drag_animation('left')
+        drag_still_frame = load_drag_still_frame()
+        drag_right_animation = load_drag_animation('right', drag_still_frame)
+        drag_left_animation = load_drag_animation('left', drag_still_frame)
         falling_animation = load_falling_animation()
         landing_normal_animation = load_landing_normal_animation()
         landing_magic_animation = load_landing_magic_animation()
-        walk_right_anim = load_walk_animation('right')
-        walk_left_anim = load_walk_animation('left')
+        walk_right_animation = load_walk_animation('right')
+        walk_left_animation = load_walk_animation('left')
         music_animation = load_music_animation()
         video_animation = load_video_animation()
+        kiss_animation = load_kiss_animation()
 
         reactions = ReactionBook()
         reactions.load(REACTIONS_FILE)
@@ -74,8 +79,8 @@ def main() -> int | None:
             falling=falling_animation,
             landing_normal=landing_normal_animation,
             landing_magic=landing_magic_animation,
-            walk_right=walk_right_anim,
-            walk_left=walk_left_anim,
+            walk_right=walk_right_animation,
+            walk_left=walk_left_animation,
             music=music_animation,
             video=video_animation,
             reactions=reactions,
@@ -83,7 +88,8 @@ def main() -> int | None:
             tick_ms=TICK_INTERVAL_MS,
             scale=PET_SCALE,
             start_position=PET_START_POSITION,
-            span_all_screens=PET_SPAN_ALL_SCREENS
+            span_all_screens=PET_SPAN_ALL_SCREENS,
+            kiss=kiss_animation,
         )
         pet.show()
 

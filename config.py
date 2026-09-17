@@ -65,6 +65,7 @@ DRAG_DIR = SPRITES_DIR / 'drag'  # анимация перетягивания
 WALK_DIR = SPRITES_DIR / 'walk'  # анимация ходьбы
 MUSIC_DIR = SPRITES_DIR / 'music'  # анимация прослушивания музыки
 VIDEO_DIR = SPRITES_DIR / 'video'  # анимация просмотра видео
+KISS_DIR = SPRITES_DIR / 'kiss'
 
 FALL_DIR = SPRITES_DIR / 'fall'
 FALL_FALLING_DIR = FALL_DIR / 'falling'  # анимация падения
@@ -90,8 +91,8 @@ _DEFAULTS: dict = {
     'pet_span_all_screens': True,  # True - использовать все экраны, False - только основной
 
     # Анимации
-    'idle_fps': 13.0,
-    'drag_fps': 14.0,
+    'idle_fps': 11.0,
+    'drag_fps': 12.0,
     'fall_fps': 22.0,
     'walk_fps': 6.0,
     'tick_interval_ms': 16,
@@ -410,3 +411,13 @@ MEDIA_POLL_INTERVAL_MS: int = _settings['media_poll_interval_ms']
 # Просмотр видео
 VIDEO_ENABLED: bool = _settings['video_enabled']
 VIDEO_FPS: float = _settings['video_fps']
+
+# Поцелуйчик
+KISS_FPS: float = 10.0
+
+# Веса событий в idle. Значение = относительная вероятность.
+# Сюда добавлять новые события
+IDLE_EVENT_WEIGHTS: dict[str, float] = {
+    'walk': 0.7,
+    'kiss': 0.3,
+}

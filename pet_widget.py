@@ -28,6 +28,7 @@ from config import (
     BUBBLE_OFFSET_Y,
     REACTIONS_SOUND_ENABLED,
     REACTIONS_TEXT_ENABLED,
+    IDLE_EVENT_WEIGHTS,
 )
 
 from render import Animation, DragAnimSet
@@ -44,18 +45,11 @@ class PetState(Enum):
     IDLE = auto()
     WALK = auto()
     DRAG = auto()
+    KISS = auto()
     FALL = auto()
     LAND = auto()
     MUSIC = auto()
     WATCHING = auto()
-
-
-class DragPhase(Enum):
-    """ Подфазы перетаскивания. Переключаются по скорости курсора """
-    
-    ACCEL = auto()
-    HOLD = auto()
-    DECEL = auto()
 
 
 def _virtual_desktop_geometry() -> QRect:
@@ -83,6 +77,7 @@ class PetWidget(QWidget):
             landing_magic: Animation,
             music: Animation,
             video: Animation,
+            kiss: Animation,
             reactions: ReactionBook,
             sounds: SoundPlayer,
             tick_ms: int = 16,
@@ -103,6 +98,7 @@ class PetWidget(QWidget):
         self.walk_animations = {1: walk_right, -1: walk_left}
         self.music_animation = music
         self.video_animation = video
+        self.kiss_animation = kiss
 
         # Текущее состояние
         self.pet_state = PetState.IDLE
@@ -120,7 +116,7 @@ class PetWidget(QWidget):
         self.pet_position = QPoint(0, 0)
 
         # Перетаскивание
-        self.drag_phase: DragPhase | None = None
+        self.drag_moving = False
         self.drag_direction = 1
         self.grab_offset = QPoint()
         self.last_cursor_move_time = 0.0
@@ -235,7 +231,7 @@ class PetWidget(QWidget):
         self.video_playing = want_video
 
         # Питомца не трогаем, если он занят перетаскиванием или падением.
-        busy = self.pet_state in (PetState.DRAG, PetState.FALL, PetState.LAND)
+        busy = self.pet_state in (PetState.DRAG, PetState.FALL, PetState.LAND, PetState.KISS)
         if busy:
             return
 
@@ -396,7 +392,7 @@ class PetWidget(QWidget):
         # Хватание отменяет падение/приземление, если они были в процессе.
         self.fall_velocity = 0.0
         self.pet_state = PetState.DRAG
-        self.drag_phase = DragPhase.ACCEL
+        self.drag_moving = False
 
         click_position = event.position().toPoint()
         self.grab_offset = click_position - self.pet_position
@@ -407,9 +403,9 @@ class PetWidget(QWidget):
         self.last_cursor_move_time = time.perf_counter()
         self.last_cursor_x = event.globalPosition().toPoint().x()
         self.cursor_speed = 0.0
-        self._activate_animation(
-            self.drag_animation_sets[self.drag_direction].accel
-        )
+
+        drag_set = self.drag_animation_sets[self.drag_direction]
+        self._activate_animation(drag_set.still)
         event.accept()
 
     def mouseMoveEvent(self, event):
@@ -435,7 +431,10 @@ class PetWidget(QWidget):
                 new_direction = 1 if horizontal_velocity > 0 else -1
                 if new_direction != self.drag_direction:
                     self.drag_direction = new_direction
-                    self._apply_drag_phase_animation()
+                    # Если движемся — сразу переключаемся на цикл нового направления
+                    if self.drag_moving:
+                        drag_set = self.drag_animation_sets[self.drag_direction]
+                        self._activate_animation(drag_set.cycle)
 
         self.last_cursor_move_time = current_time
         self.last_cursor_x = new_global_x
@@ -470,8 +469,8 @@ class PetWidget(QWidget):
     def _end_drag(self) -> None:
         """ Отпустили мышь. Если питомец в воздухе — падает, иначе в idle """
 
-        self.drag_phase = None
         self.cursor_speed = 0.0
+        self.drag_moving = False
 
         if self.pet_position.y() < self._floor_top_y():
             fall_height = self._floor_top_y() - self.pet_position.y()
@@ -486,48 +485,26 @@ class PetWidget(QWidget):
             log.debug('Конец перетаскивания: возврат в idle')
             self._enter_idle()
 
-    def _apply_drag_phase_animation(self) -> None:
-        """ Устанавливает анимацию, соответствующую текущей фазе перетаскивания и направлению """
-
-        if self.drag_phase is None:
-            return
-
-        direction_set = self.drag_animation_sets[self.drag_direction]
-        if self.drag_phase is DragPhase.ACCEL:
-            self._activate_animation(direction_set.accel)
-        elif self.drag_phase is DragPhase.HOLD:
-            self._activate_animation(direction_set.hold)
-        elif self.drag_phase is DragPhase.DECEL:
-            self._activate_animation(direction_set.decel)
-
     def _update_drag(self, delta_time: float) -> None:
         """ Переключает фазы перетаскивания по скорости курсора и завершению анимаций """
 
         if (time.perf_counter() - self.last_cursor_move_time) * 1000 > SPEED_ZERO_MS:
             self.cursor_speed = 0.0
 
-        current_phase = self.drag_phase
+        moving = self.cursor_speed > SPEED_STOP
 
-        # Резко ускорился — играем ACCEL из любого состояния.
-        if self.cursor_speed > SPEED_START and current_phase is not DragPhase.ACCEL:
-            self.drag_phase = DragPhase.ACCEL
-            self._apply_drag_phase_animation()
+        if moving == self.drag_moving:
             return
 
-        if current_phase is DragPhase.ACCEL:
-            if self.active_animation.finished:
-                self.drag_phase = DragPhase.HOLD
-                self._apply_drag_phase_animation()
+        self.drag_moving = moving
+        drag_set = self.drag_animation_sets[self.drag_direction]
 
-        elif current_phase is DragPhase.HOLD:
-            if self.cursor_speed < SPEED_STOP:
-                self.drag_phase = DragPhase.DECEL
-                self._apply_drag_phase_animation()
-
-        elif current_phase is DragPhase.DECEL:
-            if self.active_animation.finished:
-                self.drag_phase = None
-                self._enter_idle()
+        if moving:
+            log.debug('Перетаскивание')
+            self._activate_animation(drag_set.cycle)
+        else:
+            log.debug('Движение')
+            self._activate_animation(drag_set.still)
 
     # Логика падения и приземления
     def _update_fall(self, delta_time: float) -> None:
@@ -609,17 +586,37 @@ class PetWidget(QWidget):
         self._activate_animation(self.walk_animations[direction])
         log.debug(f'Начало ходьбы: {"вправо" if direction > 0 else "влево"}')
 
+    def _start_kiss(self) -> None:
+        """ Запускает анимацию поцелуя — событие в idle """
+
+        log.debug('Событие idle: поцелуй')
+        self.pet_state = PetState.KISS
+        self._activate_animation(self.kiss_animation)
+
+    def _start_idle_event(self) -> None:
+        """ Выбирает случайное событие в idle по весам из config """
+
+        events = list(IDLE_EVENT_WEIGHTS.keys())
+        weights = list(IDLE_EVENT_WEIGHTS.values())
+        event = random.choices(events, weights=weights, k=1)[0]
+
+        if event == 'walk':
+            self._start_walk()
+        elif event == 'kiss':
+            self._start_kiss()
+        else:
+            log.warning('Неизвестное idle-событие: %s', event)
+
     def _update_idle(self, delta_time: float) -> None:
         """ Планировщик idle-событий. Пока — только ходьба """
 
         if self.music_playing or self.video_playing:
-            # Заиграла музыка или видео запускаем переключение фазы
             self._enter_idle()
             return
 
         self.idle_wait_left -= delta_time
         if self.idle_wait_left <= 0:
-            self._start_walk()
+            self._start_idle_event()
 
     def _update_walk(self, delta_time: float) -> None:
         """ Двигает питомца, следит за краями экрана и таймером ходьбы """
@@ -645,6 +642,13 @@ class PetWidget(QWidget):
         self._update_mask()
         self.update()
 
+    def _update_kiss(self, _delta_time: float) -> None:
+        """ Ждёт окончания анимации поцелуя, затем возвращает в idle """
+
+        if self.active_animation.finished:
+            log.debug('Поцелуй завершён: возврат в idle')
+            self._enter_idle()
+
     # Игровой цикл
     def _on_tick(self) -> None:
         """ Вызывается таймером ~60 раз в секунду. Обновляет состояние """
@@ -661,6 +665,8 @@ class PetWidget(QWidget):
             self._update_land(delta_time)
         elif self.pet_state is PetState.WALK:
             self._update_walk(delta_time)
+        elif self.pet_state is PetState.KISS:
+            self._update_kiss(delta_time)
         elif self.pet_state is PetState.MUSIC:
             pass
         elif self.pet_state is PetState.WATCHING:

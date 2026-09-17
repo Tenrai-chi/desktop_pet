@@ -15,12 +15,14 @@ from config import (
     MUSIC_FPS,
     VIDEO_DIR,
     VIDEO_FPS,
+    KISS_FPS,
+    KISS_DIR
 )
 
 from render import (
     load_frames,
     Animation,
-    DragAnimSet,
+    DragAnimSet, Frame,
 )
 
 log = logging.getLogger(__name__)
@@ -39,21 +41,44 @@ def load_idle_animation() -> Animation:
     return Animation(frames, fps=IDLE_FPS, loop=True)
 
 
-def load_drag_animation(direction: str) -> DragAnimSet:
+def load_kiss_animation() -> Animation:
+    """ Анимация поцелуя — событие в idle, играется один раз """
+
+    paths = list(KISS_DIR.glob('kiss_*.png'))
+    if not paths:
+        raise FileNotFoundError(
+            f'Не найдено kiss_*.png в {KISS_DIR}'
+        )
+    frames = load_frames(paths)
+    log.info(f'Загружено кадров поцелуя: {len(frames)}')
+    return Animation(frames, fps=KISS_FPS, loop=False)
+
+
+def load_drag_still_frame() -> Frame:
+    """ Статичный кадр перетаскивания (drag_0.png) — питомец висит неподвижно """
+
+    path = DRAG_DIR / 'drag_0.png'
+    if not path.exists():
+        raise FileNotFoundError(f'Нет файла {path}')
+    return load_frames([path])[0]
+
+
+def load_drag_animation(direction: str, still_frame: Frame) -> DragAnimSet:
     """
     Анимация перетаскивания в одном направлении.
     Args:
         direction: 'right' или 'left'
+        still_frame: общий статичный кадр drag_0
     """
 
     paths = list(DRAG_DIR.glob(f'{direction}_*.png'))
-    if not paths:
+    if len(paths) < 2:
         raise FileNotFoundError(
-            f'Не найдено {direction}_*.png в {DRAG_DIR}'
+            f'Нужно минимум 2 кадра {direction}_*.png в {DRAG_DIR}'
         )
     frames = load_frames(paths)
     log.info(f'Загружено кадров перетаскивания {direction}: {len(frames)}')
-    return DragAnimSet(frames, fps=DRAG_FPS)
+    return DragAnimSet(frames, still_frame, fps=DRAG_FPS)
 
 
 def load_falling_animation() -> Animation:

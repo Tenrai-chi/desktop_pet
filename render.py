@@ -142,14 +142,15 @@ class Animation:
 
 class DragAnimSet:
     """
-    Набор из трёх анимаций перетягивания для одного направления.
-    Ожидает 5 кадров: 1-2-3 — ускорение (3 = максимальный наклон),
-    3-4-5 — торможение. HOLD — статичный кадр 3, пока кот «висит».
+    Набор кадров перетаскивания для одного направления.
+    Ожидает 2 кадра: 1 — нейтральный, 2 — сдвиг в сторону.
+    При движении играем зацикленный цикл [1, 2], в покое — статичный кадр 1.
     """
 
-    def __init__(self, frames: list[Frame], fps: float = 14.0):
-        assert len(frames) >= 5, f'Ожидается минимум 5 кадров, получено {len(frames)}'
-        self.all_frames = frames
-        self.accel = Animation(frames[0:3], fps=fps, loop=False)
-        self.hold = Animation([frames[2]], fps=1.0, loop=True)
-        self.decel = Animation(frames[2:5], fps=fps, loop=False)
+    def __init__(self, cycle_frames: list[Frame], still_frame: Frame, fps: float = 14.0):
+        assert len(cycle_frames) >= 2, (
+            f'Ожидается минимум 2 кадра движения, получено {len(cycle_frames)}'
+        )
+        self.all_frames = cycle_frames
+        self.cycle = Animation(cycle_frames[:2], fps=fps, loop=True)
+        self.still = Animation([still_frame], fps=1.0, loop=True)
