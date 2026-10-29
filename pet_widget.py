@@ -1,51 +1,55 @@
+""" Модуль виджета питомца (главное окно, состояния, физика) """
+
 import logging
-import time
 import random
+import time
 from enum import Enum, auto
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QPainter, QRegion
-from PySide6.QtWidgets import QApplication, QMenu, QWidget, QLabel
+from PySide6.QtGui import QAction, QContextMenuEvent, QMouseEvent, QPainter, QPaintEvent, QRegion
+from PySide6.QtWidgets import QApplication, QLabel, QMenu, QWidget
 
 from config import (
+    BUBBLE_DEFAULT_DURATION,
+    BUBBLE_MAX_WIDTH,
+    BUBBLE_OFFSET_Y,
     DIRECTION_MIN_SPEED,
     GRAVITY,
     HARD_FALL_THRESHOLD,
+    IDLE_EVENT_WEIGHTS,
     IDLE_WAIT_MAX,
     IDLE_WAIT_MIN,
     LANDING_SLOWDOWN_DISTANCE,
     LANDING_SLOWDOWN_SPEED,
     MAX_FALL_SPEED,
+    REACTIONS_SOUND_ENABLED,
+    REACTIONS_TEXT_ENABLED,
     SPEED_EMA_ALPHA,
-    SPEED_START,
     SPEED_STOP,
     SPEED_ZERO_MS,
+    VIDEO_SITES,
+    VOICE_LISTEN_DURATION,
     WALK_DURATION_MAX,
     WALK_DURATION_MIN,
     WALK_SPEED,
-    BUBBLE_DEFAULT_DURATION,
-    BUBBLE_MAX_WIDTH,
-    BUBBLE_OFFSET_Y,
-    REACTIONS_SOUND_ENABLED,
-    REACTIONS_TEXT_ENABLED,
-    IDLE_EVENT_WEIGHTS,
 )
-
-from render import Animation, DragAnimSet
-from sound_player import SoundPlayer
+from loads_media import PetAnimations
 from reactions import ReactionBook
-
+from render import Animation
+from sound_player import SoundPlayer
 
 log = logging.getLogger(__name__)
 
 
 class PetState(Enum):
-    """ Общее состояние питомца: покой, перетаскивание, падение, приземление и тд."""
+    """ Общее состояние питомца """
 
+    APPEARING = auto()
     IDLE = auto()
     WALK = auto()
     DRAG = auto()
     KISS = auto()
+    POTION = auto()
     FALL = auto()
     LAND = auto()
     MUSIC = auto()
@@ -53,7 +57,12 @@ class PetState(Enum):
 
 
 def _virtual_desktop_geometry() -> QRect:
-    """ Объединение пространства нескольких мониторов в одну рабочее пространство """
+    """
+    Возвращает объединенное пространство всех мониторов.
+
+    Returns:
+        Общий прямоугольник (QRect) всех экранов.
+    """
     
     screens = QApplication.screens()
     combined_rect = screens[0].geometry()
@@ -62,54 +71,91 @@ def _virtual_desktop_geometry() -> QRect:
     return combined_rect
 
 
+def _single_screen_geometry(index: int) -> QRect:
+    """
+    Возвращает рабочую область одного монитора по индексу.
+    Если индекс вне диапазона — возвращает основной монитор
+    и пишет warning в лог (чтобы приложение не падало).
+
+    Args:
+        index: Индекс монитора.
+
+    Returns:
+        Рабочая область выбранного монитора (QRect).
+    """
+
+    screens = QApplication.screens()
+    if 0 <= index < len(screens):
+        return screens[index].availableGeometry()
+    log.warning(
+        f'Неверный параметр индекса монитора {index}, возможный индекс от 1 до {len(screens)}'
+    )
+    return QApplication.primaryScreen().availableGeometry()
+
+
 class PetWidget(QWidget):
     """ Прозрачное окно с питомцем. Управляет состояниями, вводом и физикой """
 
     def __init__(
             self,
-            idle: Animation,
-            drag_right: DragAnimSet,
-            drag_left: DragAnimSet,
-            walk_right: Animation,
-            walk_left: Animation,
-            falling: Animation,
-            landing_normal: Animation,
-            landing_magic: Animation,
-            music: Animation,
-            video: Animation,
-            kiss: Animation,
+            animations: PetAnimations,
             reactions: ReactionBook,
             sounds: SoundPlayer,
             tick_ms: int = 16,
             scale: float = 1.0,
-            start_position: str = 'bottom-center',
-            span_all_screens: bool = True,
-    ):
+            start_position: str = 'center',
+            use_all_screens: bool = True,
+            monitor_index: int = 0,
+    ) -> None:
+        """
+        Инициализирует виджет питомца.
+        Args:
+            animations: Набор всех анимаций.
+            reactions: Книга реакций на приложения и сайты.
+            sounds: Плеер звуков.
+            tick_ms: Интервал игрового цикла в миллисекундах.
+            scale: Масштаб отображения питомца.
+            start_position: Стартовая позиция ('center', 'left', 'right').
+            use_all_screens: Использовать ли все мониторы.
+            monitor_index: Индекс монитора (если use_all_screens=False).
+        """
+
         super().__init__()
 
         assert scale > 0, f'scale должен быть > 0, получено {scale}'
 
-        # Анимации
-        self.idle_animation = idle
-        self.falling_animation = falling
-        self.landing_normal_animation = landing_normal
-        self.landing_magic_animation = landing_magic
-        self.drag_animation_sets = {1: drag_right, -1: drag_left}
-        self.walk_animations = {1: walk_right, -1: walk_left}
-        self.music_animation = music
-        self.video_animation = video
-        self.kiss_animation = kiss
+        # Голосовые команды
+        self.voice_listener = None
+        self.command_handler = None
 
-        # Текущее состояние
-        self.pet_state = PetState.IDLE
-        self.active_animation = idle
-        self.active_frame = idle.current
+        # Анимации
+        self.idle_animation = animations.idle
+        self.falling_animation = animations.falling
+        self.landing_normal_animation = animations.landing_normal
+        self.landing_magic_animation = animations.landing_magic
+        self.drag_animation_sets = {1: animations.drag_right, -1: animations.drag_left}
+        self.walk_animations = {1: animations.walk_right, -1: animations.walk_left}
+        self.music_animation = animations.music
+        self.video_animation = animations.video
+        self.kiss_animation = animations.kiss
+        self.potion_animation = animations.potion
+
+        # Стартовое состояние
+        self._appear_side = {
+            'left': 'left',
+            'right': 'right',
+            'center': 'center',
+        }[start_position]
+        self._appear_elapsed = 0.0
+        self.pet_state = PetState.APPEARING
+        self.active_animation = getattr(animations, f'appear_{self._appear_side}')
+        self.active_frame = animations.idle.current
 
         # Размер спрайта на экране
         frame_width, frame_height = self.active_frame.size
         self.pet_render_size = QSize(
-            round(frame_width * scale),
-            round(frame_height * scale),
+            round(frame_width * scale / 2),
+            round(frame_height * scale / 2),
         )
 
         # Позиция питомца на экране
@@ -131,11 +177,18 @@ class PetWidget(QWidget):
         # Ходьба и IDLE планировщик
         self.walk_direction = 1
         self.walk_time_left = 0.0
+        self._walk_from_appear = False
+        self._appear_walk_elapsed = 0.0
         self.idle_wait_left = random.uniform(IDLE_WAIT_MIN, IDLE_WAIT_MAX)
 
         # Музыка и видео
         self.music_playing = False
         self.video_playing = False
+
+        # Браузер
+        self.browser_site = ''
+        self._raw_media_type = 'unknown'
+        self._raw_is_playing = False
 
         # Реакции
         self.reactions = reactions
@@ -172,10 +225,10 @@ class PetWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
 
         # Окно на весь рабочий стол при наличии нескольких мониторов
-        if span_all_screens:
+        if use_all_screens:
             self.setGeometry(_virtual_desktop_geometry())
         else:
-            self.setGeometry(QApplication.primaryScreen().availableGeometry())
+            self.setGeometry(_single_screen_geometry(monitor_index))
 
         self._apply_start_position(start_position)
         self._update_mask()
@@ -186,17 +239,83 @@ class PetWidget(QWidget):
         self.tick_timer.timeout.connect(self._on_tick)
         self.tick_timer.start(tick_ms)
 
-    # Облачко и реакции
+    # ---- Облачко и реакции ----
     def say(self, text: str, duration: float = BUBBLE_DEFAULT_DURATION) -> None:
-        """ Показать реплику в облачке. Если что-то уже висит — в очередь """
+        """
+        Показывает реплику в облачке (или ставит в очередь).
+
+        Args:
+            text: Текст реплики.
+            duration: Время отображения в секундах.
+        """
 
         if self.bubble_visible:
             self.bubble_queue.append((text, duration))
             return
         self._show_bubble(text, duration)
 
+    def set_voice_modules(self, listener, handler) -> None:
+        """
+        Внедряет голосовые модули (слушатель и обработчик команд).
+
+        Args:
+            listener: Экземпляр VoiceListener.
+            handler: Экземпляр CommandHandler.
+        """
+
+        self.voice_listener = listener
+        self.command_handler = handler
+
+    def _start_voice_listening(self) -> None:
+        """ Запускает прослушивание микрофона (если питомец свободен) """
+
+        if not self.voice_listener:
+            return
+        if self.pet_state in (PetState.DRAG, PetState.FALL, PetState.LAND, PetState.KISS):
+            return
+
+        self.say('Слушаю...')
+        # Длительность из настроек
+        from config import VOICE_LISTEN_DURATION
+        self.voice_listener.listen_once(duration=VOICE_LISTEN_DURATION)
+
+    def on_voice_failed(self, reason: str) -> None:
+        """
+        Обрабатывает неудачную попытку распознавания речи.
+
+        Args:
+            reason: Причина ошибки.
+        """
+
+        log.debug(f'Голосовая команда не выполнена: {reason}')
+        self.say(reason)
+
+    def on_voice_command(self, text: str) -> None:
+        """
+        Обрабатывает успешно распознанную команду.
+
+        Args:
+            text: Распознанный текст.
+        """
+
+        log.debug(f'Голосовая команда: {text}')
+        if not self.command_handler:
+            return
+
+        reply, action = self.command_handler.execute(text)
+        if reply:
+            self.say(reply)
+
+        if action == 'exit':
+            QTimer.singleShot(1500, self.shutdown)
+
     def react(self, process_name: str) -> None:
-        """Реакция на смену активного процесса. Cooldown уже учтён в ReactionBook """
+        """
+        Реакция на смену активного процесса.
+
+        Args:
+            process_name: Имя исполняемого файла процесса.
+        """
 
         if not self.reactions:
             return
@@ -217,12 +336,74 @@ class PetWidget(QWidget):
         log.debug(f'Реакция на {process_name}: текст={text}, звук={sound}')
 
     def set_media_state(self, media_type: str, is_playing: bool) -> None:
-        """ Реакция на смену медиа-состояния от MediaWatcher """
+        """
+        Сигнал от MediaWatcher (сохраняет сырое состояние).
 
-        want_music = (media_type == "music" and is_playing)
-        want_video = (media_type == "video" and is_playing)
+        Args:
+            media_type: Тип медиа ('music', 'video' и т.д.).
+            is_playing: Играет ли сейчас.
+        """
 
-        # Если ничего не изменилось — выходим.
+        self._raw_media_type = media_type
+        self._raw_is_playing = is_playing
+        self._recompute_media_state()
+
+    def set_browser_site(self, site: str) -> None:
+        """
+        Сигнал от WindowWatcher (активный сайт в браузере).
+
+        Args:
+            site: Ключ активного сайта.
+        """
+
+        if site == self.browser_site:
+            return
+        self.browser_site = site
+        log.debug('Браузер: сайт=%r', site)
+
+        # Пересчитываем медиа — вдруг YouTube, и надо сменить WATCHING/MUSIC
+        self._recompute_media_state()
+
+        # Реакция на открытие сайта
+        if site:
+            self._react_to_site(site)
+
+    def _react_to_site(self, site: str) -> None:
+        """
+        Показывает реплику при открытии известного сайта.
+
+        Args:
+            site: Ключ сайта.
+        """
+
+        reaction = self.reactions.match_site(site) if self.reactions else None
+        if reaction is None:
+            return
+
+        text = reaction.pick_text() if REACTIONS_TEXT_ENABLED else None
+        sound = reaction.pick_sound() if REACTIONS_SOUND_ENABLED else None
+
+        if text:
+            self.say(text)
+        if sound:
+            self.sounds.play(sound)
+
+        self.reactions.mark_site_fired(site)
+        log.debug('Реакция на сайт %s: text=%r, sound=%r', site, text, sound)
+
+    def _recompute_media_state(self) -> None:
+        """ Пересчитывает эффективный тип медиа с учётом активного сайта """
+
+        media_type = self._raw_media_type
+        is_playing = self._raw_is_playing
+
+        # YouTube/Twitch: даже если GSMTC вернул music — считаем видео
+        if is_playing and self.browser_site in VIDEO_SITES:
+            media_type = 'video'
+
+        want_music = (media_type == 'music' and is_playing)
+        want_video = (media_type == 'video' and is_playing)
+
         if (want_music == self.music_playing
                 and want_video == self.video_playing):
             return
@@ -230,8 +411,14 @@ class PetWidget(QWidget):
         self.music_playing = want_music
         self.video_playing = want_video
 
-        # Питомца не трогаем, если он занят перетаскиванием или падением.
-        busy = self.pet_state in (PetState.DRAG, PetState.FALL, PetState.LAND, PetState.KISS)
+        busy = self.pet_state in (
+            PetState.APPEARING,
+            PetState.DRAG,
+            PetState.FALL,
+            PetState.LAND,
+            PetState.KISS,
+            PetState.POTION,
+        )
         if busy:
             return
 
@@ -244,7 +431,6 @@ class PetWidget(QWidget):
             self.pet_state = PetState.WATCHING
             self._activate_animation(self.video_animation)
         else:
-            # Ничего не играет — возвращаемся в idle.
             if self.pet_state in (PetState.MUSIC, PetState.WATCHING):
                 log.debug('Медиа закончилось: возврат в idle')
                 self._enter_idle()
@@ -270,7 +456,13 @@ class PetWidget(QWidget):
         self._activate_animation(self.idle_animation)
 
     def _show_bubble(self, text: str, duration: float) -> None:
-        """ Вывод окошка с репликой """
+        """
+        Выводит окошко с репликой.
+
+        Args:
+            text: Текст реплики.
+            duration: Время отображения в секундах.
+        """
 
         self.bubble.setText(text)
         self.bubble.setFixedWidth(BUBBLE_MAX_WIDTH)
@@ -311,31 +503,63 @@ class PetWidget(QWidget):
 
         self.bubble.move(x, y)
 
-    # Позиционирование и маска
+    # ---- Позиционирование и маска ----
     def _floor_top_y(self) -> int:
-        """ Координата Y верхнего края питомца, при котором питомец расположен внизу экрана """
+        """
+        Координата Y верхнего края питомца (на уровне пола).
+
+        Returns:
+            Y-координата пола.
+        """
 
         return self.height() - self.pet_render_size.height()
 
+    def _clamp_pet_position(self) -> None:
+        """ Возвращает питомца в допустимые границы экрана """
+
+        pet_width = self.pet_render_size.width()
+        min_x = 0
+        max_x = self.width() - pet_width
+        floor_y = self._floor_top_y()
+
+        old_x, old_y = self.pet_position.x(), self.pet_position.y()
+        new_x = max(min_x, min(max_x, old_x))
+        new_y = min(old_y, floor_y)
+
+        if new_x == old_x and new_y == old_y:
+            return
+
+        self.pet_position = QPoint(new_x, new_y)
+        self._update_mask()
+        self.update()
+        log.debug(
+            f'Питомец вытолкнут в границы экрана: ({old_x}, {old_y}) -> ({new_x}, {new_y})'
+        )
+
     def _apply_start_position(self, mode: str) -> None:
-        """ Располагает питомца в заданную стартовую позицию внутри окна """
+        """
+        Располагает питомца в стартовую позицию внутри окна.
+
+        Args:
+            mode: Позиция ('center', 'left', 'right').
+        """
         
         pet_width = self.pet_render_size.width()
         pet_height = self.pet_render_size.height()
         window_width = self.width()
         window_height = self.height()
 
-        if mode == 'bottom-center':
+        if mode == 'center':
             self.pet_position = QPoint(
                 (window_width - pet_width) // 2,
                 window_height - pet_height,
             )
-        elif mode == 'bottom-right':
+        elif mode == 'right':
             self.pet_position = QPoint(
                 window_width - pet_width,
                 window_height - pet_height,
             )
-        elif mode == 'bottom-left':
+        elif mode == 'left':
             self.pet_position = QPoint(
                 0,
                 window_height - pet_height,
@@ -364,9 +588,13 @@ class PetWidget(QWidget):
 
         self.setMask(mask)
 
-    # Управление анимацией
     def _activate_animation(self, animation: Animation) -> None:
-        """ Переключает активную анимацию и сбрасывает её в начало """
+        """
+        Переключает активную анимацию и сбрасывает её в начало.
+
+        Args:
+            animation: Новая анимация.
+        """
         
         animation.reset()
         self.active_animation = animation
@@ -380,10 +608,20 @@ class PetWidget(QWidget):
         self.close()
         QApplication.instance().quit()
 
-    # Обработка событий мыши
-    def mousePressEvent(self, event):
-        """ Начало перетаскивания: запоминаем точку захвата, снимаем маску """
-        
+    # ---- Обработка событий мыши ----
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """
+        Обрабатывает нажатие кнопок мыши (драг или активация голоса).
+
+        Args:
+            event: Событие мыши.
+        """
+
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._start_voice_listening()
+            event.accept()
+            return
+
         if event.button() != Qt.MouseButton.LeftButton:
             return
 
@@ -393,6 +631,8 @@ class PetWidget(QWidget):
         self.fall_velocity = 0.0
         self.pet_state = PetState.DRAG
         self.drag_moving = False
+        self._walk_from_appear = False
+        self._appear_walk_elapsed = 0.0
 
         click_position = event.position().toPoint()
         self.grab_offset = click_position - self.pet_position
@@ -408,8 +648,13 @@ class PetWidget(QWidget):
         self._activate_animation(drag_set.still)
         event.accept()
 
-    def mouseMoveEvent(self, event):
-        """ Двигает питомца вслед за курсором, обновляет скорость и направление """
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        """
+        Двигает питомца вслед за курсором, обновляет скорость и направление.
+
+        Args:
+            event: Событие движения мыши.
+        """
         
         if self.pet_state is not PetState.DRAG:
             return
@@ -444,8 +689,13 @@ class PetWidget(QWidget):
         self.update()
         event.accept()
 
-    def mouseReleaseEvent(self, event):
-        """ Завершение перетаскивания: установка маски, запуск падения """
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        """
+        Завершает перетаскивание: устанавливает маску, запускает падение.
+
+        Args:
+            event: Событие мыши.
+        """
         
         if event.button() != Qt.MouseButton.LeftButton:
             return
@@ -455,8 +705,13 @@ class PetWidget(QWidget):
         self._update_mask()
         event.accept()
 
-    def contextMenuEvent(self, event):
-        """ Вывод контекстного меню через правый клик мышки """
+    def contextMenuEvent(self, event) -> None:
+        """
+        Выводит контекстное меню через правый клик мыши.
+
+        Args:
+            event: Событие контекстного меню.
+        """
         
         menu = QMenu(self)
         quit_action = QAction('Выход', self)
@@ -467,7 +722,7 @@ class PetWidget(QWidget):
 
     # Логика перетаскивания
     def _end_drag(self) -> None:
-        """ Отпустили мышь. Если питомец в воздухе — падает, иначе в idle """
+        """ Завершает перетаскивание (переход в падение или idle) """
 
         self.cursor_speed = 0.0
         self.drag_moving = False
@@ -482,11 +737,17 @@ class PetWidget(QWidget):
             self.fall_velocity = 0.0
             self._activate_animation(self.falling_animation)
         else:
+            self._clamp_pet_position()
             log.debug('Конец перетаскивания: возврат в idle')
             self._enter_idle()
 
     def _update_drag(self, delta_time: float) -> None:
-        """ Переключает фазы перетаскивания по скорости курсора и завершению анимаций """
+        """
+        Переключает фазы перетаскивания по скорости курсора.
+
+        Args:
+            delta_time: Время с прошлого тика (секунды).
+        """
 
         if (time.perf_counter() - self.last_cursor_move_time) * 1000 > SPEED_ZERO_MS:
             self.cursor_speed = 0.0
@@ -506,9 +767,14 @@ class PetWidget(QWidget):
             log.debug('Движение')
             self._activate_animation(drag_set.still)
 
-    # Логика падения и приземления
+    # ---- Логика падения и приземления ----
     def _update_fall(self, delta_time: float) -> None:
-        """ Применяет ускорение для падения, двигает питомца, проверяет, достиг ли питомец пола """
+        """
+        Применяет физику падения и проверяет достижение пола.
+
+        Args:
+            delta_time: Время с прошлого тика (секунды).
+        """
 
         self.fall_velocity = min(
             self.fall_velocity + GRAVITY * delta_time,
@@ -534,6 +800,7 @@ class PetWidget(QWidget):
 
         if new_y >= floor_y:
             self.pet_position.setY(floor_y)
+            self._clamp_pet_position()
             self.fall_velocity = 0.0
             self.pet_state = PetState.LAND
             if self.fall_is_hard:
@@ -549,12 +816,61 @@ class PetWidget(QWidget):
         self.update()
 
     def _update_land(self, delta_time: float) -> None:
-        """ Ожидание окончания анимации приземления, затем возвращает idle """
+        """
+        Ожидание окончания анимации приземления.
+
+        Args:
+            delta_time: Время с прошлого тика (секунды).
+        """
 
         if self.active_animation.finished:
             log.debug('Приземление завершено: возврат в idle')
             self._enter_idle()
 
+    # ---- Логика появления ----
+    def _update_appearing(self, delta_time: float) -> None:
+        """
+        Ждёт окончания анимации появления.
+
+        Для center — сразу в idle. Для left/right — шаг из-за края.
+
+        Args:
+            delta_time: Время с прошлого тика (секунды).
+        """
+
+        if not self.active_animation.finished:
+            return
+
+        log.debug(f'Появление завершено (side={self._appear_side})')
+
+        if self._appear_side == 'center':
+            self._enter_idle()
+            return
+
+        pet_width = self.pet_render_size.width()
+        max_x = self.width() - pet_width
+
+        if self._appear_side == 'left':
+            self.pet_position.setX(-pet_width)
+            direction = 1
+        else:  # right
+            self.pet_position.setX(max_x + pet_width)
+            direction = -1
+
+        self._update_mask()
+        self.update()
+
+        # Шаг в сторону центра ровно на ширину спрайта
+        walk_duration = pet_width / WALK_SPEED
+        self.walk_direction = direction
+        self.walk_time_left = walk_duration
+        self._walk_from_appear = True
+        self._appear_walk_elapsed = 0.0
+        self.pet_state = PetState.WALK
+        self._activate_animation(self.walk_animations[direction])
+        log.debug(f'После появления: шаг {"вправо" if direction > 0 else "влево"}')
+
+    # ---- Логика ходьбы и IDLE-планировшика ----
     def _start_walk(self) -> None:
         """ Выбирает направление и длительность, запускает ходьбу """
 
@@ -593,22 +909,44 @@ class PetWidget(QWidget):
         self.pet_state = PetState.KISS
         self._activate_animation(self.kiss_animation)
 
+    def _start_potion(self) -> None:
+        """ Запускает анимацию с зельем — событие в idle """
+
+        log.debug('Событие idle: зелье')
+        self.pet_state = PetState.POTION
+        self._activate_animation(self.potion_animation)
+
     def _start_idle_event(self) -> None:
-        """ Выбирает случайное событие в idle по весам из config """
+        """
+        Выбирает случайное событие в idle по весам из config.
+        Если все веса = 0 — событие не выбирается, питомец остаётся в idle.
+        """
 
         events = list(IDLE_EVENT_WEIGHTS.keys())
         weights = list(IDLE_EVENT_WEIGHTS.values())
+
+        if sum(weights) <= 0:
+            log.debug('Все веса idle-событий = 0, остаёмся в idle')
+            self._enter_idle()
+            return
         event = random.choices(events, weights=weights, k=1)[0]
 
         if event == 'walk':
             self._start_walk()
         elif event == 'kiss':
             self._start_kiss()
+        elif event == 'potion':
+            self._start_potion()
         else:
             log.warning('Неизвестное idle-событие: %s', event)
 
     def _update_idle(self, delta_time: float) -> None:
-        """ Планировщик idle-событий. Пока — только ходьба """
+        """
+        Планировщик idle-событий (ожидание и выбор следующего).
+
+        Args:
+            delta_time: Время с прошлого тика (секунды).
+        """
 
         if self.music_playing or self.video_playing:
             self._enter_idle()
@@ -619,14 +957,43 @@ class PetWidget(QWidget):
             self._start_idle_event()
 
     def _update_walk(self, delta_time: float) -> None:
-        """ Двигает питомца, следит за краями экрана и таймером ходьбы """
+        """
+        Двигает питомца, следит за краями экрана и таймером ходьбы.
 
-        self.walk_time_left -= delta_time
+        Args:
+            delta_time: Время с прошлого тика (секунды).
+        """
 
         pet_width = self.pet_render_size.width()
+
+        if self._walk_from_appear:
+            self._appear_walk_elapsed += delta_time
+            total_duration = pet_width / WALK_SPEED
+            progress = min(1.0, self._appear_walk_elapsed / total_duration)
+
+            if self._appear_side == 'left':
+                start_x, end_x = -pet_width, 0
+            else:  # right
+                start_x = self.width()
+                end_x = self.width() - pet_width
+
+            new_x = int(start_x + (end_x - start_x) * progress)
+            self.pet_position.setX(new_x)
+            self._update_mask()
+            self.update()
+
+            if progress >= 1.0:
+                self._walk_from_appear = False
+                self._appear_walk_elapsed = 0.0
+                log.debug('Выход из-за края завершён')
+                self._enter_idle()
+            return
+
+            # Обычная ходьба
+        self.walk_time_left -= delta_time
+
         min_x = 0
         max_x = self.width() - pet_width
-
         new_x = self.pet_position.x() + WALK_SPEED * self.walk_direction * delta_time
 
         if new_x <= min_x or new_x >= max_x or self.walk_time_left <= 0:
@@ -634,7 +1001,7 @@ class PetWidget(QWidget):
             self.pet_position.setX(int(new_x))
             self._update_mask()
             self.update()
-            log.info('Ходьба завершена')
+            log.debug('Ходьба завершена')
             self._enter_idle()
             return
 
@@ -643,13 +1010,30 @@ class PetWidget(QWidget):
         self.update()
 
     def _update_kiss(self, _delta_time: float) -> None:
-        """ Ждёт окончания анимации поцелуя, затем возвращает в idle """
+        """
+        Ждёт окончания анимации поцелуя.
+
+        Args:
+            delta_time: Время с прошлого тика (секунды).
+        """
 
         if self.active_animation.finished:
             log.debug('Поцелуй завершён: возврат в idle')
             self._enter_idle()
 
-    # Игровой цикл
+    def _update_potion(self, _delta_time: float) -> None:
+        """
+        Ждёт окончания анимации зелья.
+
+        Args:
+            delta_time: Время с прошлого тика (секунды).
+        """
+
+        if self.active_animation.finished:
+            log.debug('Зелье завершено: возврат в idle')
+            self._enter_idle()
+
+    # ---- Игровой цикл и отрисовка ----
     def _on_tick(self) -> None:
         """ Вызывается таймером ~60 раз в секунду. Обновляет состояние """
 
@@ -657,7 +1041,9 @@ class PetWidget(QWidget):
         delta_time = current_time - self.last_tick_time
         self.last_tick_time = current_time
 
-        if self.pet_state is PetState.DRAG:
+        if self.pet_state is PetState.APPEARING:
+            self._update_appearing(delta_time)
+        elif self.pet_state is PetState.DRAG:
             self._update_drag(delta_time)
         elif self.pet_state is PetState.FALL:
             self._update_fall(delta_time)
@@ -667,6 +1053,8 @@ class PetWidget(QWidget):
             self._update_walk(delta_time)
         elif self.pet_state is PetState.KISS:
             self._update_kiss(delta_time)
+        elif self.pet_state is PetState.POTION:
+            self._update_potion(delta_time)
         elif self.pet_state is PetState.MUSIC:
             pass
         elif self.pet_state is PetState.WATCHING:
@@ -683,9 +1071,13 @@ class PetWidget(QWidget):
             self.active_frame = new_frame
             self.update()
 
-    # Отрисовка
-    def paintEvent(self, _event):
-        """ Рисует текущий кадр питомца в его прямоугольнике внутри окна """
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """
+        Рисует текущий кадр питомца в его прямоугольнике внутри окна.
+
+        Args:
+            event: Событие отрисовки.
+        """
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)

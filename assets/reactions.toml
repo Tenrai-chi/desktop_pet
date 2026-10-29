@@ -1,11 +1,57 @@
+# Приложения
 [apps.chrome]
 process_names = ["chrome.exe"]
-texts = ["О, браузер!", "Пойдём гуглить?", "Что ищем?"]
+texts = [
+    "О, браузер!",
+    "Пойдём гуглить?",
+    "Что ищем?",
+    "Будешь включать инкогнито?)"
+]
 sounds = ["mur"]
 cooldown = 60.0
 
 [apps.steam]
-process_names = ["steam.exe", "steamwebhelper.exe", "pycharm64.exe"]
-texts = ["О, игры!", "Готов играть?", "Запускаем?"]
+process_names = [
+    "steam.exe",
+    "steamwebhelper.exe",
+    "pycharm64.exe"]
+texts = [
+    "О, игры!",
+    "Готов играть?",
+    "Запускаем?"
+]
 sounds = ["mew"]
 cooldown = 60.0
+
+# Сайты
+[sites.youtube]
+texts = [
+    "Что будем смотреть?",
+    "Врубай что-нибудь!",
+    "Опять видео?"
+]
+sounds = ["mur"]
+cooldown = 180.0
+
+[sites.twitch]
+texts = [
+    "Стрим!",
+    "Кто сегодня стримит?",
+    "Погнали смотреть!"
+]
+sounds = ["mew"]
+cooldown = 180.0
+
+[sites.vimeo]
+texts = ["Vimeo? Серьёзно?"]
+sounds = []
+cooldown = 180.0
+
+[sites.netflix]
+texts = [
+    "Что смотрим?",
+    "Уютный вечер с сериалом?"
+]
+sounds = ["mur"]
+cooldown = 300.0
+

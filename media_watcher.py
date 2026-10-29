@@ -1,3 +1,5 @@
+""" Модуль отслеживания медиа-сессий Windows (GSMTC) """
+
 import asyncio
 import logging
 import threading
@@ -7,7 +9,10 @@ from PySide6.QtCore import QObject, Signal
 
 log = logging.getLogger(__name__)
 
+# Значения статусов из WinRT
 _STATUS_PLAYING = 4
+
+# Значения типов медиа из WinRT
 _TYPE_UNKNOWN = 0
 _TYPE_MUSIC = 1
 _TYPE_VIDEO = 2
@@ -22,13 +27,23 @@ _TYPE_NAMES = {
 
 
 class MediaWatcher(QObject):
-    """ Периодически читает GSMTC, эмитит сигнал при смене состояния """
+    """
+    Периодически читает GSMTC (Global System Media Transport Controls).
+    Отслеживает смену медиа-состояния (музыка/видео) в фоновом потоке.
+    Signals:
+        media_state_changed: Сигнал (media_type: str, is_playing: bool).
+    """
 
-    # media_type: 'music' | 'video' | 'image' | 'unknown'
-    # is_playing: True, если статус PLAYING
     media_state_changed = Signal(str, bool)
 
-    def __init__(self, poll_interval_ms: int = 2000, parent: QObject | None = None):
+    def __init__(self, poll_interval_ms: int = 2000, parent: QObject | None = None) -> None:
+        """
+        Инициализирует наблюдатель за медиа.
+        Args:
+            poll_interval_ms: Интервал опроса в миллисекундах.
+            parent: Родительский QObject.
+        """
+
         super().__init__(parent)
         self._interval_sec = poll_interval_ms / 1000.0
         self._stop = threading.Event()
@@ -36,7 +51,6 @@ class MediaWatcher(QObject):
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    # Общее
     def stop(self) -> None:
         """ Останавливает фоновый поток """
         
@@ -44,12 +58,16 @@ class MediaWatcher(QObject):
 
     # Фоновый поток
     def _run(self) -> None:
+        """ Точка входа для фонового потока (запуск asyncio) """
+
         try:
             asyncio.run(self._poll_loop())
         except Exception:
             log.exception('MediaWatcher упал')
 
     async def _poll_loop(self) -> None:
+        """ Основной асинхронный цикл опроса медиа-сессии """
+
         from winsdk.windows.media.control import (
             GlobalSystemMediaTransportControlsSessionManager as SessionManager,
         )
@@ -78,7 +96,15 @@ class MediaWatcher(QObject):
 
     @staticmethod
     async def _read_state(manager) -> tuple[str, bool]:
-        """ Читает текущую сессию и возвращает (media_type, is_playing) """
+        """
+        Читает текущую сессию и возвращает тип медиа и статус проигрывания.
+
+        Args:
+            manager: Экземпляр GSMTC SessionManager.
+
+        Returns:
+            Кортеж из (тип_медиа, играет_ли_сейчас).
+        """
         
         session = manager.get_current_session()
         if session is None:

@@ -1,11 +1,11 @@
+""" Модуль системы реакций питомца на события (процессы и сайты) """
+
 import logging
 import random
 import time
-
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-
-import tomllib
 
 
 log = logging.getLogger(__name__)
@@ -22,14 +22,26 @@ class Reaction:
     sound_enabled: bool = True
 
     def pick_text(self) -> str | None:
-        """ Случайная фраза или None, если фраз нет или текст выключен """
+        """
+        Возвращает случайную фразу.
+
+        Returns:
+            Случайная строка из списка texts или None, если фраз нет
+            или текстовые реакции отключены.
+        """
         
         if not self.text_enabled:
             return None
         return random.choice(self.texts) if self.texts else None
 
     def pick_sound(self) -> str | None:
-        """ Случайное имя звука или None, если звуков нет или звук выключен """
+        """
+        Возвращает случайное имя звука.
+
+        Returns:
+            Случайная строка из списка sounds или None, если звуков нет
+            или звуковые реакции отключены.
+        """
         
         if not self.sound_enabled:
             return None
@@ -44,11 +56,20 @@ class ReactionBook:
     """
 
     def __init__(self) -> None:
+        """ Инициализирует пустые словари для реакций и таймеров """
+
         self._by_process: dict[str, Reaction] = {}
+        self._by_site: dict[str, Reaction] = {}
         self._last_fired: dict[str, float] = {}
+        self._last_site_fired: dict[str, float] = {}
 
     def load(self, path: Path) -> None:
-        """ Читает TOML с реакциями. Тихо выходит, если файла нет """
+        """
+        Загружает реакции из TOML-файла.
+
+        Args:
+            path: Путь к файлу конфигурации (например, reactions.toml).
+        """
         
         if not path.exists():
             log.info(f'Файл реакций не найден: {path}')
@@ -74,12 +95,32 @@ class ReactionBook:
                 self._by_process[proc.lower()] = reaction
                 log.debug(f'Реакция {key} привязана к {proc}')
 
-        log.debug(f'Загружено реакций на {len(self._by_process)} процессов')
+        sites_section = data.get('sites', {})
+        for key, cfg in sites_section.items():
+            reaction = Reaction(
+                texts=list(cfg.get('texts', [])),
+                sounds=list(cfg.get('sounds', [])),
+                cooldown=float(cfg.get('cooldown', 180.0)),
+                text_enabled=bool(cfg.get('text_enabled', True)),
+                sound_enabled=bool(cfg.get('sound_enabled', True)),
+            )
+            self._by_site[key.lower()] = reaction
+            log.debug(f'Реакция на сайт {key} загружена')
+
+        log.debug(
+            f'Загружено реакций: {len(self._by_process)} на процессы, {len(self._by_site)} на сайты',
+        )
 
     def match(self, process_name: str) -> Reaction | None:
         """
-        Возвращает реакцию для процесса, если cooldown истёк. Иначе None.
-        Не сбрасывает таймер — это делает PetWidget после показа реакции.
+        Ищет реакцию для процесса, если перезарядка истекла.
+        Не сбрасывает таймер.
+
+        Args:
+            process_name: Имя исполняемого файла процесса (например, 'chrome.exe').
+
+        Returns:
+            Экземпляр Reaction или None, если реакции нет или cooldown не прошёл.
         """
 
         reaction = self._by_process.get(process_name.lower())
@@ -92,6 +133,41 @@ class ReactionBook:
         return reaction
 
     def mark_fired(self, process_name: str) -> None:
-        """ Запомнить момент срабатывания — для cooldown """
+        """
+        Запоминает момент срабатывания реакции для процесса.
+
+        Args:
+            process_name: Имя процесса.
+        """
 
         self._last_fired[process_name.lower()] = time.perf_counter()
+
+    def match_site(self, site: str) -> Reaction | None:
+        """
+        Ищет реакцию для сайта, если перезарядка истекла.
+
+        Args:
+            site: Идентификатор сайта (например, 'youtube').
+
+        Returns:
+            Экземпляр Reaction или None, если реакции нет или cooldown не прошёл.
+        """
+
+        reaction = self._by_site.get(site.lower())
+        if reaction is None:
+            return None
+
+        last = self._last_site_fired.get(site.lower(), 0.0)
+        if time.perf_counter() - last < reaction.cooldown:
+            return None
+        return reaction
+
+    def mark_site_fired(self, site: str) -> None:
+        """
+        Запоминает момент срабатывания реакции на сайт.
+
+        Args:
+            site: Идентификатор сайта.
+        """
+
+        self._last_site_fired[site.lower()] = time.perf_counter()

@@ -1,13 +1,17 @@
+""" Модуль рендеринга: загрузка анимаций через pygame и конвертация в QImage """
+
+import logging
 import os
+import re
+from pathlib import Path
+
+# Настройка переменных окружения ДО импорта pygame (SDL читает их при старте)
 os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
-import re
-import logging
 import pygame
-
 from PySide6.QtGui import QImage
-from pathlib import Path
+
 
 log = logging.getLogger(__name__)
 
@@ -21,12 +25,13 @@ def init_pygame_offscreen() -> None:
 
 def shutdown_pygame() -> None:
     """ Корректное завершение pygame для закрытия программы """
+
     pygame.quit()
 
 
 class Frame:
     """
-    Один кадр анимации: pygame.Surface + ленивый кэш QImage.
+    Один кадр анимации: pygame. Surface + ленивый кэш QImage.
     QImage строится при первом обращении, потому что не каждый кадр
     гарантированно попадёт на экран (например, ветки ACCEL/DECEL могут
     не доиграть до конца при резкой смене направления)
@@ -34,13 +39,25 @@ class Frame:
     
     __slots__ = ('surface', '_qimage')
 
-    def __init__(self, surface: pygame.Surface):
+    def __init__(self, surface: pygame.Surface) -> None:
+        """
+        Инициализирует кадр.
+
+        Args:
+            surface: Поверхность pygame с изображением кадра.
+        """
+
         self.surface = surface
         self._qimage: QImage | None = None
 
     @property
     def qimage(self) -> QImage:
-        """ QImage, построенный из pygame.Surface. Кэшируется после первого вызова """
+        """
+        Возвращает QImage, построенный из pygame.Surface (кэшируется).
+
+        Returns:
+            Объект QImage для отрисовки в Qt.
+        """
 
         if self._qimage is None:
             data = pygame.image.tostring(self.surface, 'RGBA')
@@ -55,7 +72,12 @@ class Frame:
 
     @property
     def size(self) -> tuple[int, int]:
-        """ Размер кадра в пикселях """
+        """
+        Возвращает размер кадра в пикселях.
+
+        Returns:
+            Кортеж (ширина, высота).
+        """
 
         return self.surface.get_size()
 
@@ -63,13 +85,14 @@ class Frame:
 def _extract_frame_number(file_path: Path) -> tuple[int, str]:
     """
     Ключ сортировки кадров.
-    Если в имени нет числа — считаем его нулевым, сортируем по строке.
+    Ищет число в имени файла для правильной сортировки (idle_2 перед idle_10).
+    Если числа нет — считает его нулевым.
+
     Args:
-        file_path: путь к папке с файлами
+        file_path: Путь к файлу изображения.
+
     Returns:
-        tuple:
-            - число из имени файла
-            - имя файла
+        Кортеж (число из имени, имя файла).
     """
 
     number_match = re.search(r'(\d+)', file_path.stem)
@@ -79,11 +102,12 @@ def _extract_frame_number(file_path: Path) -> tuple[int, str]:
 
 def load_frames(file_paths: list[Path]) -> list[Frame]:
     """
-    Загружает PNG, сортирует и возвращает список.
+    Загружает PNG-файлы, сортирует и возвращает список кадров.
     Args:
-        file_paths: путь к файлам
+        file_paths: Список путей к файлам изображений.
+
     Returns:
-        frames: список кадров для анимации
+        Список объектов Frame.
     """
 
     sorted_paths = sorted(file_paths, key=_extract_frame_number)
@@ -97,7 +121,16 @@ def load_frames(file_paths: list[Path]) -> list[Frame]:
 class Animation:
     """ Покадровая анимация с фиксированным fps из настроек """
 
-    def __init__(self, frames: list[Frame], fps: float = 6.0, loop: bool = True):
+    def __init__(self, frames: list[Frame], fps: float = 6.0, loop: bool = True) -> None:
+        """
+        Инициализирует анимацию.
+
+        Args:
+            frames: Список кадров.
+            fps: Кадров в секунду.
+            loop: Зацикливать ли анимацию.
+        """
+
         assert frames, 'Пустая анимация'
         self.frames = frames
         self.fps = fps
@@ -135,8 +168,12 @@ class Animation:
 
     @property
     def current(self) -> Frame:
-        """ Текущий кадр анимации """
+        """
+        Возвращает текущий активный кадр.
 
+        Returns:
+            Объект Frame.
+        """
         return self.frames[self.frame_index]
 
 
@@ -147,7 +184,16 @@ class DragAnimSet:
     При движении играем зацикленный цикл [1, 2], в покое — статичный кадр 1.
     """
 
-    def __init__(self, cycle_frames: list[Frame], still_frame: Frame, fps: float = 14.0):
+    def __init__(self, cycle_frames: list[Frame], still_frame: Frame, fps: float = 14.0) -> None:
+        """
+        Инициализирует набор анимаций перетаскивания.
+
+        Args:
+            cycle_frames: Кадры для цикла движения.
+            still_frame: Кадр для состояния покоя (drag_0).
+            fps: Кадров в секунду.
+        """
+
         assert len(cycle_frames) >= 2, (
             f'Ожидается минимум 2 кадра движения, получено {len(cycle_frames)}'
         )
