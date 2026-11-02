@@ -30,6 +30,7 @@ from config import (
     VOICE_BROWSER,
     VOICE_ENABLED,
     VOICE_HOTKEY,
+    VOICE_INPUT_DEVICE,
     VOICE_SAMPLE_RATE,
     VOICE_SEARCH_ENGINE,
     VOSK_MODEL_PATH,
@@ -99,11 +100,11 @@ def main() -> int | None:
 
         # Голосовые команды
         if VOICE_ENABLED:
-            voice_listener = VoiceListener(VOSK_MODEL_PATH, VOICE_SAMPLE_RATE)
+            voice_listener = VoiceListener(VOSK_MODEL_PATH, VOICE_SAMPLE_RATE, input_device=VOICE_INPUT_DEVICE)
             command_handler = CommandHandler(
                 COMMANDS_FILE,
                 search_engine=VOICE_SEARCH_ENGINE,
-                browser=VOICE_BROWSER
+                browser=VOICE_BROWSER,
             )
 
             voice_listener.recognized.connect(pet.on_voice_command)

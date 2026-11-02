@@ -2,6 +2,7 @@
 
 import json
 import logging
+import numpy as np
 import queue
 import threading
 import time
@@ -25,18 +26,20 @@ class VoiceListener(QObject):
     failed = Signal(str)  # причина неудачи (нет микро, тишина и т.д.)
     model_ready = Signal(bool)  # True, если модель загрузилась
 
-    def __init__(self, model_path: Path, sample_rate: int = 16000) -> None:
+    def __init__(self, model_path: Path, sample_rate: int = 16000, input_device: str = '') -> None:
         """
         Инициализирует слушатель и запускает фоновую загрузку модели.
 
         Args:
             model_path: Путь к папке с моделью Vosk.
             sample_rate: Частота дискретизации микрофона (по умолчанию 16000).
+            input_device: Имя входного устройства
         """
 
         super().__init__()
         self._model_path = model_path
         self._sample_rate = sample_rate
+        self._input_device = input_device
         self._model = None
         self._busy = threading.Lock()
 
@@ -87,21 +90,44 @@ class VoiceListener(QObject):
         """
 
         try:
-            q = queue.Queue()
+            # 1. Определяем нужное устройство (по имени из настроек или системное)
+            device_idx = None
+            if self._input_device:
+                for i, dev in enumerate(sounddevice.query_devices()):
+                    if dev['name'] == self._input_device and dev['max_input_channels'] > 0:
+                        device_idx = i
+                        break
 
-            def callback(indata, frames, time_info, status):
-                q.put(bytes(indata))
+            if device_idx is None:
+                # Берем индекс устройства ввода по умолчанию
+                device_idx = sounddevice.default.device[0]
 
-            try:
-                sounddevice.query_devices(kind='input')
-            except Exception as e:
-                log.error(f'Микрофон не найден: {e}')
+            if device_idx is None or device_idx < 0:
                 self.failed.emit('Микрофон не найден.')
                 return
 
-            with sounddevice.RawInputStream(
-                    samplerate=self._sample_rate, blocksize=8000,
-                    dtype='int16', channels=1, callback=callback
+            # 2. Узнаем частоту микрофона (безопасно получаем словарь)
+            if device_idx is not None:
+                dev_info = sounddevice.query_devices(device_idx)
+            else:
+                dev_info = sounddevice.query_devices(kind='input')
+
+            native_sr = int(dev_info['default_samplerate'])
+            log.info(f'Запись с устройства: {dev_info["name"]} ({native_sr} Гц)')
+
+            q = queue.Queue()
+
+            def callback(indata, frames, time_info, status):
+                q.put(indata.copy())
+
+            # Открываем поток на родной частоте микрофона
+            with sounddevice.InputStream(
+                    samplerate=native_sr,
+                    blocksize=0,
+                    device=device_idx,
+                    channels=1,
+                    dtype='int16',
+                    callback=callback
             ):
                 recognizer = KaldiRecognizer(self._model, self._sample_rate)
                 start_time = time.perf_counter()
@@ -109,7 +135,13 @@ class VoiceListener(QObject):
                 while time.perf_counter() - start_time < duration:
                     try:
                         data = q.get(timeout=0.1)
-                        recognizer.AcceptWaveform(data)
+                        flat_data = data.flatten()
+
+                        # 3. Если частота не 16000, делаем ресемплинг
+                        if native_sr != self._sample_rate:
+                            flat_data = self._resample(flat_data, native_sr, self._sample_rate)
+
+                        recognizer.AcceptWaveform(flat_data.tobytes())
                     except queue.Empty:
                         pass
 
@@ -126,3 +158,13 @@ class VoiceListener(QObject):
             self.failed.emit(f'Ошибка записи: {e}')
         finally:
             self._busy.release()
+
+    @staticmethod
+    def _resample(data: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+        """ Линейная интерполяция для приведения частоты дискретизации  """
+
+        duration = len(data) / orig_sr
+        time_old = np.linspace(0, duration, len(data))
+        time_new = np.linspace(0, duration, int(len(data) * target_sr / orig_sr))
+        resampled = np.interp(time_new, time_old, data)
+        return resampled.astype(np.int16)

@@ -1,9 +1,11 @@
 """ Модуль окна настроек приложения """
 
 import logging
-import os
 import subprocess
 import sys
+import numpy as np
+import sounddevice as sd
+
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -552,8 +554,9 @@ class SettingsWindow(QDialog):
                 break
         mic_layout.addWidget(self._mic_combo, stretch=1)
         mic_test_btn = QPushButton('Тест 2 сек')
-        mic_test_btn.setToolTip('Будет доступно после подключения Vosk')
-        mic_test_btn.setEnabled(False)
+        mic_test_btn.setToolTip('Записать 2 секунды и проверить уровень звука')
+        mic_test_btn.setEnabled(True)
+        mic_test_btn.clicked.connect(self._test_microphone)
         mic_layout.addWidget(mic_test_btn)
         voice_layout.addLayout(mic_layout)
 
@@ -705,6 +708,55 @@ class SettingsWindow(QDialog):
         self._test_player.setAudioOutput(self._test_audio_out)
         self._test_player.setSource(QUrl.fromLocalFile(str(wav_path)))
         self._test_player.play()
+
+    def _test_microphone(self) -> None:
+        """Записывает 2 секунды звука и показывает максимальную амплитуду."""
+
+        device_name = self._mic_combo.currentData()
+        device_idx = None
+
+        try:
+            # 1. Ищем индекс устройства, если оно выбрано в списке
+            if device_name:
+                for i, dev in enumerate(sd.query_devices()):
+                    if dev['name'] == device_name and dev['max_input_channels'] > 0:
+                        device_idx = i
+                        break
+
+            # 2. Получаем словарь с параметрами устройства (если idx=None, вернет дефолтное)
+            if device_idx is not None:
+                dev_info = sd.query_devices(device_idx)
+            else:
+                dev_info = sd.query_devices(kind='input')
+
+            sr = int(dev_info['default_samplerate'])
+
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+            # 3. Запись 2 секунд
+            recording = sd.rec(int(2 * sr), samplerate=sr, channels=1, dtype='int16', device=device_idx)
+            sd.wait()
+
+            QApplication.restoreOverrideCursor()
+
+            max_amp = int(np.max(np.abs(recording)))
+
+            if max_amp > 100:
+                QMessageBox.information(
+                    self, 'Микрофон работает',
+                    f'✅ Звук успешно записан!\nМаксимальный уровень: {max_amp}'
+                )
+            else:
+                QMessageBox.warning(
+                    self, 'Микрофон молчит',
+                    f'❌ Запись прошла, но звук слишком тихий или отсутствует.\n'
+                    f'Максимальный уровень: {max_amp}\n\n'
+                    f'Проверь настройки конфиденциальности Windows.'
+                )
+
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, 'Ошибка', f'Не удалось записать с микрофона:\n{e}')
 
     # Вкладка 6: Дополнительно
     def _build_advanced_tab(self) -> QWidget:
