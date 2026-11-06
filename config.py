@@ -6,8 +6,8 @@ import os
 import sys
 from pathlib import Path
 
-APP_NAME = 'DesktopPet_v0.3.0'
-APP_VERSION = '0.3.1'
+APP_NAME = 'DesktopPet_v0.3.2'
+APP_VERSION = '0.3.2'
 
 log = logging.getLogger(__name__)
 

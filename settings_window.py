@@ -122,7 +122,7 @@ class RecordHotkeyDialog(QDialog):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(label)
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event: QKeyEvent):
         """
         Перехватывает нажатия клавиш для формирования хоткея.
 
@@ -136,10 +136,14 @@ class RecordHotkeyDialog(QDialog):
 
         modifiers = event.modifiers()
         parts = []
-        if modifiers & Qt.KeyboardModifier.ControlModifier: parts.append('Ctrl')
-        if modifiers & Qt.KeyboardModifier.AltModifier: parts.append('Alt')
-        if modifiers & Qt.KeyboardModifier.ShiftModifier: parts.append('Shift')
-        if modifiers & Qt.KeyboardModifier.MetaModifier: parts.append('Win')
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            parts.append('Ctrl')
+        if modifiers & Qt.KeyboardModifier.AltModifier:
+            parts.append('Alt')
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            parts.append('Shift')
+        if modifiers & Qt.KeyboardModifier.MetaModifier:
+            parts.append('Win')
 
         # Требуем хотя бы один модификатор
         if not parts:
