@@ -32,6 +32,10 @@ from config import (
     WALK_DURATION_MAX,
     WALK_DURATION_MIN,
     WALK_SPEED,
+    THROW_MIN_SPEED,
+    THROW_BOUNCE,
+    THROW_FRICTION,
+    MAX_THROW_SPEED
 )
 from loads_media import PetAnimations
 from reactions import ReactionBook
@@ -167,10 +171,13 @@ class PetWidget(QWidget):
         self.grab_offset = QPoint()
         self.last_cursor_move_time = 0.0
         self.last_cursor_x = 0
+        self.last_cursor_y = 0
         self.cursor_speed = 0.0
+        self.cursor_vy = 0.0
 
         # Падение
         self.fall_velocity = 0.0
+        self.vx = 0.0
         self.fall_is_hard = False
         self.fall_magic_active = False
 
@@ -629,6 +636,7 @@ class PetWidget(QWidget):
 
         # Хватание отменяет падение/приземление, если они были в процессе.
         self.fall_velocity = 0.0
+        self.vx = 0.0
         self.pet_state = PetState.DRAG
         self.drag_moving = False
         self._walk_from_appear = False
@@ -642,7 +650,9 @@ class PetWidget(QWidget):
 
         self.last_cursor_move_time = time.perf_counter()
         self.last_cursor_x = event.globalPosition().toPoint().x()
+        self.last_cursor_y = event.globalPosition().toPoint().y()
         self.cursor_speed = 0.0
+        self.cursor_vy = 0.0
 
         drag_set = self.drag_animation_sets[self.drag_direction]
         self._activate_animation(drag_set.still)
@@ -662,29 +672,37 @@ class PetWidget(QWidget):
         current_time = time.perf_counter()
         click_position = event.position().toPoint()
         new_global_x = event.globalPosition().toPoint().x()
+        new_global_y = event.globalPosition().toPoint().y()  # <--- ДОБАВИТЬ
         delta_time = current_time - self.last_cursor_move_time
         delta_x = new_global_x - self.last_cursor_x
+        delta_y = new_global_y - self.last_cursor_y  # <--- ДОБАВИТЬ
 
         if delta_time > 0:
             horizontal_velocity = delta_x / delta_time
+            vertical_velocity = delta_y / delta_time  # <--- ДОБАВИТЬ
+
             self.cursor_speed = (
-                (1 - SPEED_EMA_ALPHA) * self.cursor_speed
-                + SPEED_EMA_ALPHA * abs(horizontal_velocity)
+                    (1 - SPEED_EMA_ALPHA) * self.cursor_speed
+                    + SPEED_EMA_ALPHA * abs(horizontal_velocity)
+            )
+            # Сглаживаем вертикальную скорость
+            self.cursor_vy = (
+                    (1 - SPEED_EMA_ALPHA) * self.cursor_vy
+                    + SPEED_EMA_ALPHA * vertical_velocity
             )
 
             if abs(horizontal_velocity) > DIRECTION_MIN_SPEED:
                 new_direction = 1 if horizontal_velocity > 0 else -1
                 if new_direction != self.drag_direction:
                     self.drag_direction = new_direction
-                    # Если движемся — сразу переключаемся на цикл нового направления
                     if self.drag_moving:
                         drag_set = self.drag_animation_sets[self.drag_direction]
                         self._activate_animation(drag_set.cycle)
 
         self.last_cursor_move_time = current_time
         self.last_cursor_x = new_global_x
+        self.last_cursor_y = new_global_y  # <--- ДОБАВИТЬ
 
-        # Спрайт двигается внутри окна без маски
         self.pet_position = click_position - self.grab_offset
         self.update()
         event.accept()
@@ -724,21 +742,38 @@ class PetWidget(QWidget):
     def _end_drag(self) -> None:
         """ Завершает перетаскивание (переход в падение или idle) """
 
-        self.cursor_speed = 0.0
         self.drag_moving = False
 
-        if self.pet_position.y() < self._floor_top_y():
+        # Вычисляем импульс броска
+        throw_vx = self.cursor_speed * self.drag_direction
+        throw_vy = self.cursor_vy
+
+        # ООграничение скорости
+        throw_vx = max(-MAX_THROW_SPEED, min(MAX_THROW_SPEED, throw_vx))
+        throw_vy = max(-MAX_THROW_SPEED, min(MAX_THROW_SPEED, throw_vy))
+
+        # Если разогнались достаточно сильно — передаем скорость в физику
+        if abs(throw_vx) > THROW_MIN_SPEED:
+            self.vx = throw_vx
+            log.debug(f'Бросок в сторону! vx={self.vx:.1f}')
+        else:
+            self.vx = 0.0
+
+        self.cursor_speed = 0.0
+        self.cursor_vy = 0.0
+
+        # Если питомец в воздухе (или мы его подбросили вверх) — переходим в падение
+        if self.pet_position.y() < self._floor_top_y() or throw_vy < -50:
             fall_height = self._floor_top_y() - self.pet_position.y()
             self.fall_is_hard = fall_height > HARD_FALL_THRESHOLD
             self.fall_magic_active = False
-            log.debug(f'Конец перетаскивания: падение, высота {fall_height}, '
-                      f'падение {"магическое" if self.fall_is_hard else "обычное"}')
+
+            log.debug(f'Начало полета: vx={self.vx:.1f}, vy={throw_vy:.1f}')
             self.pet_state = PetState.FALL
-            self.fall_velocity = 0.0
+            self.fall_velocity = throw_vy  # Начальная вертикальная скорость (если подбросили — будет отрицательной)
             self._activate_animation(self.falling_animation)
         else:
             self._clamp_pet_position()
-            log.debug('Конец перетаскивания: возврат в idle')
             self._enter_idle()
 
     def _update_drag(self, delta_time: float) -> None:
@@ -776,6 +811,28 @@ class PetWidget(QWidget):
             delta_time: Время с прошлого тика (секунды).
         """
 
+        pet_width = self.pet_render_size.width()
+        min_x = 0
+        max_x = self.width() - pet_width
+
+        # 1. Горизонтальное движение (если был бросок)
+        if abs(self.vx) > 1.0:
+            self.vx *= (THROW_FRICTION ** (delta_time * 60))
+            new_x = self.pet_position.x() + self.vx * delta_time
+
+            # Отскок от стен
+            if new_x <= min_x:
+                new_x = min_x
+                self.vx = abs(self.vx) * THROW_BOUNCE
+            elif new_x >= max_x:
+                new_x = max_x
+                self.vx = -abs(self.vx) * THROW_BOUNCE
+
+            self.pet_position.setX(int(new_x))
+        else:
+            self.vx = 0.0
+
+        # 2. Вертикальное движение (гравитация)
         self.fall_velocity = min(
             self.fall_velocity + GRAVITY * delta_time,
             MAX_FALL_SPEED,
@@ -784,10 +841,11 @@ class PetWidget(QWidget):
         floor_y = self._floor_top_y()
         distance_to_floor = floor_y - self.pet_position.y()
 
-        # Зона магического торможения: только для высокого падения.
+        # 3. Зона магического торможения
         in_slowdown_zone = (
                 self.fall_is_hard
                 and distance_to_floor < LANDING_SLOWDOWN_DISTANCE
+                and self.fall_velocity > 0  # Тормозим только когда падаем вниз
         )
 
         if in_slowdown_zone:
@@ -798,10 +856,12 @@ class PetWidget(QWidget):
 
         new_y = self.pet_position.y() + self.fall_velocity * delta_time
 
+        # 4. Приземление
         if new_y >= floor_y:
             self.pet_position.setY(floor_y)
             self._clamp_pet_position()
             self.fall_velocity = 0.0
+            self.vx = 0.0  # Гасим горизонтальную скорость об пол
             self.pet_state = PetState.LAND
             if self.fall_is_hard:
                 log.debug('Падение завершено: магическое приземление')
@@ -812,6 +872,7 @@ class PetWidget(QWidget):
         else:
             self.pet_position.setY(int(new_y))
 
+        # 5. Обновление маски
         self._update_mask()
         self.update()
 

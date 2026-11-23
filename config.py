@@ -380,3 +380,9 @@ VOICE_BROWSER: str = _settings['voice_browser']
 KISS_FPS: float = 10.0
 APPEAR_FPS: float = 12.0
 POTION_FPS: float = 10.0
+
+# Физика броска
+MAX_THROW_SPEED = 1500.0    # Максимальная скорость броска (чтобы не улетал в космос)
+THROW_FRICTION = 0.92       # Трение об воздух (чем меньше, тем быстрее тормозит)
+THROW_BOUNCE = 0.5          # Упругость при ударе об стену
+THROW_MIN_SPEED = 100.0     # Минимальная скорость мыши для броска

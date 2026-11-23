@@ -11,7 +11,7 @@ from config import BROWSER_PROCESSES, BROWSER_SITES
 log = logging.getLogger(__name__)
 
 
-# Константы WinAPI. Берём минимум — только то, что нужно.
+# Константы WinAPI
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _MAX_PATH = 260
 
@@ -101,7 +101,7 @@ def detect_site(title: str | None) -> str:
 
 
 class WindowWatcher(QObject):
-    """Периодически опрашивает активное окно, отправляя сигналы при изменениях."""
+    """ Периодически опрашивает активное окно, отправляя сигналы при изменениях """
 
     process_changed = Signal(str)
     site_changed = Signal(str)

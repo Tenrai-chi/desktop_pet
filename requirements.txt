@@ -24,4 +24,3 @@ tqdm==4.70.1
 urllib3==2.8.0
 vosk==0.3.45
 websockets==17.3
-winsdk==1.0.0b10
